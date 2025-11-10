@@ -673,7 +673,7 @@ class Generic_UNet(nn.Module):
 
 
 class NBP_Filter(nn.Module):
-    def __init__(self, channel, h=128, w=65):
+    def __init__(self, channel, h, w):
         super().__init__()
         self.complex_weight = nn.Parameter(torch.randn(channel, h, w, 2, dtype=torch.float32) * 0.02)
     
@@ -687,7 +687,7 @@ class NBP_Filter(nn.Module):
         return x
 
 class SS_Former(nn.Module):
-    def __init__(self, in_channels, out_channels, num_heads=4):
+    def __init__(self, in_channels, out_channels, height, width, num_heads=4):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -698,7 +698,7 @@ class SS_Former(nn.Module):
         self.k_conv = conv_nd(2, in_channels, in_channels, 1)
         self.v_conv = conv_nd(2, in_channels, in_channels, 1)
         
-        self.nbp_filter = NBP_Filter(in_channels)
+        self.nbp_filter = NBP_Filter(in_channels, h=height, w=width // 2 + 1)
         self.proj_out = zero_module(conv_nd(2, in_channels, out_channels, 1))
         self.mlp = nn.Sequential(
             nn.Linear(in_channels, in_channels * 4),
@@ -870,7 +870,10 @@ class UNetModel_MedSegDiffV2(nn.Module):
                 ds *= 2
         
         bottleneck_ch = ch
-        self.ss_former = SS_Former(bottleneck_ch, bottleneck_ch)
+        bottleneck_size = image_size // ds
+        self.ss_former = SS_Former(
+            bottleneck_ch, bottleneck_ch, height=bottleneck_size, width=bottleneck_size
+        )
 
         self.output_blocks = nn.ModuleList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
