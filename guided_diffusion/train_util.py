@@ -181,42 +181,6 @@ class TrainLoop:
             try:
                 batch, cond, name = next(data_iter)
             except StopIteration:
-                # StopIteration is thrown if dataset ends
-                # reinitialize data loader
-                data_iter = iter(self.dataloader)
-                batch, cond, name = next(data_iter)
-
-            # Unpack 2.5D data if available
-            if isinstance(batch, (list, tuple)):
-                batch_2d, batch_2_5d = batch
-            else:  # Fallback for old dataloader
-                batch_2d = batch
-                batch_2_5d = None
-
-            # Add a channel dimension to the 2.5D batch to make it 5D,
-            # suitable for the 2.5D encoder.
-            if batch_2_5d is not None:
-                batch_2_5d = batch_2_5d.unsqueeze(1)
-
-        self.run_step(batch, cond)
-
-    def run_step(self, batch, cond):
-        self.forward_backward(batch, cond)
-        took_step = self.mp_trainer.optimize(self.opt)
-        if took_step:
-            self._update_ema()
-        self._anneal_lr()
-        self.log_step()
-
-    def run_loop(self):
-        data_iter = iter(self.dataloader)
-        while (
-            not self.lr_anneal_steps
-            or self.step + self.resume_step < self.lr_anneal_steps
-        ):
-            try:
-                batch, cond, name = next(data_iter)
-            except StopIteration:
                 data_iter = iter(self.dataloader)
                 batch, cond, name = next(data_iter)
 
@@ -225,15 +189,17 @@ class TrainLoop:
                 batch_2d, batch_2_5d = batch
                 batch = batch_2d  # Use 2D for main processing
                 if batch_2_5d is not None:
+                    # Add a channel dimension to the 2.5D batch to make it 5D,
+                    # suitable for the 2.5D encoder.
                     batch_2_5d = batch_2_5d.unsqueeze(1)
             else:
                 batch_2d = batch
                 batch_2_5d = None
 
-            self.run_step(batch, cond)
+            self.run_step(batch, cond, batch_2_5d)
 
-    def run_step(self, batch, cond):
-        self.forward_backward(batch, cond)
+    def run_step(self, batch, cond, batch_2_5d=None):
+        self.forward_backward(batch, cond, batch_2_5d)
         took_step = self.mp_trainer.optimize(self.opt)
         if took_step:
             self._update_ema()
@@ -248,18 +214,15 @@ class TrainLoop:
             logger.dumpkvs()
 
 
-    def forward_backward(self, batch, cond):
+    def forward_backward(self, batch, cond, batch_2_5d=None):
         self.mp_trainer.zero_grad()
         for i in range(0, batch.shape[0], self.microbatch):
-            micro = batch[i : i + self.microbatch].to(dist_util.dev())
+            micro_2d = batch[i : i + self.microbatch].to(dist_util.dev())
             micro_cond = cond[i : i + self.microbatch].to(dist_util.dev())
             
-            # Unpack 2.5D data if available
-            if isinstance(micro, (list, tuple)):
-                micro_2d, micro_2_5d = micro
-                micro_2_5d = micro_2_5d.unsqueeze(1)
-            else:  # Fallback for old dataloader
-                micro_2d = micro
+            if batch_2_5d is not None:
+                micro_2_5d = batch_2_5d[i : i + self.microbatch].to(dist_util.dev())
+            else:
                 micro_2_5d = None
 
             last_batch = (i + self.microbatch) >= batch.shape[0]
