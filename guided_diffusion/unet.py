@@ -709,6 +709,11 @@ class SS_Former(nn.Module):
     def forward(self, x, anchor_cond, semantic_cond):
         b, c, h, w = x.shape
 
+        if anchor_cond.shape[-2:] != x.shape[-2:]:
+            anchor_cond = F.interpolate(anchor_cond, size=x.shape[-2:], mode='bilinear', align_corners=False)
+        if semantic_cond.shape[-2:] != x.shape[-2:]:
+            semantic_cond = F.interpolate(semantic_cond, size=x.shape[-2:], mode='bilinear', align_corners=False)
+
         # q from diffusion U-Net bottleneck (x),
         # k from 2.5D semantic condition (semantic_cond),
         # v from 2D anchor condition (anchor_cond)
