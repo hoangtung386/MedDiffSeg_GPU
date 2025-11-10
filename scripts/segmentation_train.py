@@ -106,7 +106,7 @@ def main():
 
 def create_argparser():
     defaults = dict(
-        data_name = 'BRATS',
+        data_name = 'BRATS3D',
         data_dir="../dataset/brats2020/training",
         schedule_sampler="uniform",
         lr=1e-4,
