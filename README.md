@@ -43,6 +43,6 @@ For training, run:
   --lr_anneal_steps 100000
 
 ---
-Kaggle data link [Brats 2021](https://www.kaggle.com/datasets/hoangtung719/brats2021-data)
+Kaggle data link: [Brats 2021](https://www.kaggle.com/datasets/hoangtung719/brats2021-data)
 
 *Please check back later for detailed updates. Thank you for your patience!*
