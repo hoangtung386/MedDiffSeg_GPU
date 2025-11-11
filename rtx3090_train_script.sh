@@ -6,14 +6,14 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_VISIBLE_DEVICES=0
 
 # Paths
-DATA_DIR="data_path"
+DATA_DIR="/home/admin1/Documents/data/training"
 OUT_DIR="./output_rtx3090_$(date +%Y%m%d_%H%M%S)"
 
 # Training params optimized for RTX 3090 24GB
 IMAGE_SIZE=256
 BATCH_SIZE=16  # Optimal for 24GB VRAM
 NUM_CHANNELS=128
-MAX_STEPS=100000
+MAX_STEPS=150000
 
 echo "========================================="
 echo "RTX 3090 Training Configuration"
@@ -22,8 +22,9 @@ echo "GPU: RTX 3090 (24GB VRAM)"
 echo "Batch Size: $BATCH_SIZE (optimized for 24GB)"
 echo "Image Size: ${IMAGE_SIZE}x${IMAGE_SIZE}"
 echo "Max Steps: $MAX_STEPS"
-echo "Expected time: ~33-50 hours for 100K steps"
+echo "Expected time: ~50-75 hours (2-3 days) for 150K steps"
 echo "Speed: ~2,000-3,000 steps/hour"
+echo "Checkpoints saved every 2000 steps"
 echo "========================================="
 echo ""
 
