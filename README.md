@@ -9,7 +9,7 @@
 This repository is being created with the goal of comprehensively upgrading and improving upon the original **MedSegDiff** version.
 
 The original repository can be found here:
-[https://github.com/ImprintLab/MedSegDiff](https://github.com/ImprintLab/MedSegDiff)
+[MedSegDiff](https://github.com/ImprintLab/MedSegDiff)
 
 ## Comparison (Work in Progress)
 
@@ -21,7 +21,28 @@ The table below illustrates the (planned) differences between the original versi
 | ![MedSegDiff Image](./MedSegDiff_architecture.png) | ![MedDiffSeg Image](./MedDiffSeg_architecture.png) |
 
 For training, run: 
-> python scripts/segmentation_train.py --data_dir /home/admin1/Documents/data/training --out_dir ./output --image_size 256 --num_channels 128 --class_cond False --num_res_blocks 2 --num_heads 1 --learn_sigma True --use_scale_shift_norm False --attention_resolutions 16 --diffusion_steps 1000 --noise_schedule linear --rescale_learned_sigmas False --rescale_timesteps False --lr 1e-4 --batch_size 8
+> !python scripts/segmentation_train.py \
+  --data_dir directory_path \
+  --out_dir directory_path \
+  --image_size 256 \
+  --num_channels 128 \
+  --class_cond False \
+  --num_res_blocks 2 \
+  --num_heads 1 \
+  --learn_sigma True \
+  --use_scale_shift_norm False \
+  --attention_resolutions 16 \
+  --diffusion_steps 1000 \
+  --noise_schedule linear \
+  --rescale_learned_sigmas False \
+  --rescale_timesteps False \
+  --lr 1e-4 \
+  --batch_size 16 \
+  --log_interval 50 \
+  --save_interval 1000 \
+  --lr_anneal_steps 100000
+
 ---
+Kaggle data link [Brats 2021](https://www.kaggle.com/datasets/hoangtung719/brats2021-data)
 
 *Please check back later for detailed updates. Thank you for your patience!*
