@@ -199,7 +199,7 @@
 #             return (batch_image, batch_image, virtual_path)
         
 #         return (batch_image, label_2d, virtual_path)
-    
+
 import torch
 import torch.nn
 import numpy as np
@@ -289,56 +289,71 @@ class BRATSDataset3D(torch.utils.data.Dataset):
         self.seqtypes_set = set(self.seqtypes)
         self.database = []
         
+        # Collect all .nii/.nii.gz files recursively
+        all_files = {}
         for root, dirs, files in os.walk(self.directory):
-            if not dirs:
-                files.sort()
-                files = [f for f in files if f.endswith('.nii.gz') or f.endswith('.nii')]
-                
-                if len(files) == 0:
-                    continue
-                    
-                datapoint = dict()
-                for f in files:
-                    try:
-                        # Extract modality from filename
-                        # Support multiple formats:
-                        # 1. BraTS_XXX_modality.nii
-                        # 2. XXXXXXXX_brain_modality.nii
-                        # 3. modality.nii.gz
-                        
-                        fname_lower = f.lower()
-                        seqtype = None
-                        
-                        # Check for each modality in the filename
-                        for mod in ['flair', 't1ce', 't1', 't2', 'seg']:
-                            if mod in fname_lower:
-                                # For t1ce, make sure it's not just t1
-                                if mod == 't1' and 't1ce' in fname_lower:
-                                    continue
-                                seqtype = mod
-                                break
-                        
-                        if seqtype:
-                            datapoint[seqtype] = os.path.join(root, f)
-                            print(f"✓ {f} → {seqtype}")
-                        else:
-                            print(f"✗ Cannot identify modality in: {f}")
-                            
-                    except Exception as e:
-                        print(f"Warning: Error parsing {f}: {e}")
+            for f in files:
+                if f.endswith('.nii.gz') or f.endswith('.nii'):
+                    full_path = os.path.join(root, f)
+                    all_files[full_path] = f
+        
+        print(f"Found {len(all_files)} .nii/.nii.gz files in total")
+        
+        # Group files by patient
+        patients = {}
+        for filepath, filename in all_files.items():
+            # Extract patient identifier from path
+            # e.g., /path/patient001/... -> patient001
+            path_parts = filepath.split(os.sep)
+            patient_id = None
+            for part in path_parts:
+                if part.startswith('patient'):
+                    patient_id = part
+                    break
+            
+            if not patient_id:
+                print(f"Warning: Cannot identify patient for {filepath}")
+                continue
+            
+            if patient_id not in patients:
+                patients[patient_id] = {}
+            
+            # Extract modality from filename
+            fname_lower = filename.lower()
+            seqtype = None
+            
+            for mod in ['flair', 't1ce', 't1', 't2', 'seg']:
+                if mod in fname_lower:
+                    if mod == 't1' and 't1ce' in fname_lower:
                         continue
-                
-                print(f"\nFolder: {root}")
-                print(f"Found modalities: {set(datapoint.keys())}")
-                print(f"Required: {self.seqtypes_set}")
-                
-                # Check if we have all required modalities
-                if self.seqtypes_set.issubset(set(datapoint.keys())):
-                    self.database.append(datapoint)
-                    print("✓ Added to dataset\n")
-                else:
-                    missing = self.seqtypes_set - set(datapoint.keys())
-                    print(f"✗ Skipped - Missing: {missing}\n")
+                    seqtype = mod
+                    break
+            
+            if seqtype:
+                patients[patient_id][seqtype] = filepath
+                print(f"✓ {patient_id}: {filename} → {seqtype}")
+            else:
+                print(f"✗ Cannot identify modality: {filename}")
+        
+        # Validate and add complete patients to database
+        print(f"\n{'='*60}")
+        print("Patient validation:")
+        print(f"{'='*60}")
+        
+        for patient_id in sorted(patients.keys()):
+            datapoint = patients[patient_id]
+            found_mods = set(datapoint.keys())
+            
+            print(f"\n{patient_id}:")
+            print(f"  Found: {found_mods}")
+            print(f"  Required: {self.seqtypes_set}")
+            
+            if self.seqtypes_set.issubset(found_mods):
+                self.database.append(datapoint)
+                print(f"  ✓ ADDED to dataset")
+            else:
+                missing = self.seqtypes_set - found_mods
+                print(f"  ✗ SKIPPED - Missing: {missing}")
         
         print(f"\n{'='*60}")
         print(f"Loaded {len(self.database)} complete patient scans")
@@ -404,4 +419,3 @@ class BRATSDataset3D(torch.utils.data.Dataset):
             return (batch_image, batch_image, virtual_path)
         
         return (batch_image, label_2d, virtual_path)
-    
