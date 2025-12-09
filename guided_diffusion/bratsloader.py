@@ -211,15 +211,6 @@ import torchvision.utils as vutils
 
 class BRATSDataset(torch.utils.data.Dataset):
     def __init__(self, directory, transform, test_flag=False):
-        '''
-        directory is expected to contain some folder structure:
-                  if some subfolder contains only files, all of these
-                  files are assumed to have a name like
-                  BraTS2021_00002_seg.nii.gz
-                  where the last part before extension is one of t1, t1ce, t2, flair, seg
-                  we assume these five files belong to the same image
-                  seg is supposed to contain the segmentation
-        '''
         super().__init__()
         self.directory = os.path.expanduser(directory)
         self.transform = transform
@@ -233,17 +224,14 @@ class BRATSDataset(torch.utils.data.Dataset):
         self.seqtypes_set = set(self.seqtypes)
         self.database = []
         for root, dirs, files in os.walk(self.directory):
-            # if there are no subdirs, we have data
             if not dirs:
                 files.sort()
-                # Filter out non-.nii/.nii.gz files
                 files = [f for f in files if f.endswith('.nii.gz') or f.endswith('.nii')]
                 
                 if len(files) == 0:
                     continue
                     
                 datapoint = dict()
-                # extract all files as channels
                 for f in files:
                     try:
                         seqtype = f.split('_')[2].split('.')[0]
@@ -252,7 +240,6 @@ class BRATSDataset(torch.utils.data.Dataset):
                         print(f"Warning: Cannot parse filename {f}, skipping...")
                         continue
                 
-                # Check if we have all required modalities (ignore extra ones like seg in test mode)
                 if self.seqtypes_set.issubset(set(datapoint.keys())):
                     self.database.append(datapoint)
 
@@ -266,17 +253,16 @@ class BRATSDataset(torch.utils.data.Dataset):
         out = torch.stack(out)
         if self.test_flag:
             image=out
-            image = image[..., 8:-8, 8:-8]     #crop to a size of (224, 224)
+            image = image[..., 8:-8, 8:-8]
             if self.transform:
                 image = self.transform(image)
             return (image, image, path)
         else:
-
             image = out[:-1, ...]
             label = out[-1, ...][None, ...]
-            image = image[..., 8:-8, 8:-8]      #crop to a size of (224, 224)
+            image = image[..., 8:-8, 8:-8]
             label = label[..., 8:-8, 8:-8]
-            label=torch.where(label > 0, 1, 0).float()  #merge all tumor classes into one
+            label=torch.where(label > 0, 1, 0).float()
             if self.transform:
                 state = torch.get_rng_state()
                 image = self.transform(image)
@@ -290,15 +276,6 @@ class BRATSDataset(torch.utils.data.Dataset):
 
 class BRATSDataset3D(torch.utils.data.Dataset):
     def __init__(self, directory, transform, test_flag=False):
-        '''
-        directory is expected to contain some folder structure:
-                  if some subfolder contains only files, all of these
-                  files are assumed to have a name like
-                  BraTS2021_00002_seg.nii.gz
-                  where the last part before extension is one of t1, t1ce, t2, flair, seg
-                  we assume these five files belong to the same image
-                  seg is supposed to contain the segmentation
-        '''
         super().__init__()
         self.directory = os.path.expanduser(directory)
         self.transform = transform
@@ -311,70 +288,86 @@ class BRATSDataset3D(torch.utils.data.Dataset):
 
         self.seqtypes_set = set(self.seqtypes)
         self.database = []
+        
         for root, dirs, files in os.walk(self.directory):
-            # if there are no subdirs, we have data
             if not dirs:
                 files.sort()
-                # Filter out non-.nii/.nii.gz files
                 files = [f for f in files if f.endswith('.nii.gz') or f.endswith('.nii')]
                 
                 if len(files) == 0:
                     continue
                     
                 datapoint = dict()
-                # extract all files as channels
                 for f in files:
                     try:
-                        # Parse modality from filename: BraTS_001_flair.nii → 'flair'
-                        parts = f.split('_')
-                        if len(parts) >= 3:
-                            # Get last part before extension
-                            seqtype = parts[2].split('.')[0]
+                        # Extract modality from filename
+                        # Support multiple formats:
+                        # 1. BraTS_XXX_modality.nii
+                        # 2. XXXXXXXX_brain_modality.nii
+                        # 3. modality.nii.gz
+                        
+                        fname_lower = f.lower()
+                        seqtype = None
+                        
+                        # Check for each modality in the filename
+                        for mod in ['flair', 't1ce', 't1', 't2', 'seg']:
+                            if mod in fname_lower:
+                                # For t1ce, make sure it's not just t1
+                                if mod == 't1' and 't1ce' in fname_lower:
+                                    continue
+                                seqtype = mod
+                                break
+                        
+                        if seqtype:
                             datapoint[seqtype] = os.path.join(root, f)
-                            print(f"DEBUG: {f} → seqtype: {seqtype}")
+                            print(f"✓ {f} → {seqtype}")
                         else:
-                            print(f"Warning: Filename {f} does not match expected format (need at least 3 parts separated by '_')")
+                            print(f"✗ Cannot identify modality in: {f}")
+                            
                     except Exception as e:
-                        print(f"Warning: Cannot parse filename {f}, error: {e}")
+                        print(f"Warning: Error parsing {f}: {e}")
                         continue
                 
-                print(f"DEBUG: Folder {root} - Found modalities: {set(datapoint.keys())}, Required: {self.seqtypes_set}")
+                print(f"\nFolder: {root}")
+                print(f"Found modalities: {set(datapoint.keys())}")
+                print(f"Required: {self.seqtypes_set}")
                 
-                # Check if we have all required modalities (ignore extra ones like seg in test mode)
+                # Check if we have all required modalities
                 if self.seqtypes_set.issubset(set(datapoint.keys())):
                     self.database.append(datapoint)
-                    print(f"DEBUG: ✓ Added patient from {root}")
+                    print("✓ Added to dataset\n")
                 else:
                     missing = self.seqtypes_set - set(datapoint.keys())
-                    print(f"DEBUG: ✗ Skipped {root} - Missing modalities: {missing}")
+                    print(f"✗ Skipped - Missing: {missing}\n")
         
+        print(f"\n{'='*60}")
         print(f"Loaded {len(self.database)} complete patient scans")
+        print(f"Total slices: {len(self.database) * 155}")
+        print(f"{'='*60}\n")
     
     def __len__(self):
         return len(self.database) * 155
 
     def __getitem__(self, x):
-        # Determine volume and slice index
         n = x // 155
         slice_idx = x % 155
         filedict = self.database[n]
-        path = filedict[self.seqtypes[0]]  # for virtual path
+        path = filedict[self.seqtypes[0]]
 
-        # Load full 3D volumes for all modalities
+        # Load full 3D volumes
         volumes = {}
         for seqtype in self.seqtypes:
             nib_img = nibabel.load(filedict[seqtype])
             volumes[seqtype] = torch.tensor(nib_img.get_fdata())
 
-        # --- Create 2D data (center slice) with all 4 modalities ---
+        # Create 2D data (center slice with all 4 modalities)
         image_2d_modalities = []
         for s in self.seqtypes:
             if s != 'seg':
                 image_2d_modalities.append(volumes[s][..., slice_idx])
         image_2d = torch.stack(image_2d_modalities)
 
-        # --- Create 2.5D data (stack of 3 consecutive slices from flair) ---
-        # For Conv3D: need shape (1, H, W, 3) where 1 is the channel dimension
+        # Create 2.5D data (3 consecutive slices from flair)
         vol_2_5d = volumes.get('flair', volumes[self.seqtypes[0]])
         num_slices_2_5d = 3
         half_slices = num_slices_2_5d // 2
@@ -384,19 +377,18 @@ class BRATSDataset3D(torch.utils.data.Dataset):
             clamped_idx = np.clip(i, 0, vol_2_5d.shape[2] - 1)
             slices_for_stack.append(vol_2_5d[..., clamped_idx])
 
-        # Stack along depth dimension and add channel dimension
         # Shape: (H, W, 3) -> (1, H, W, 3) for Conv3D
-        image_2_5d = torch.stack(slices_for_stack, dim=-1).unsqueeze(0)  # Shape: (1, H, W, 3)
+        image_2_5d = torch.stack(slices_for_stack, dim=-1).unsqueeze(0)
 
-        # --- Handle label ---
+        # Handle label
         if self.test_flag:
-            label_2d = image_2d  # Return image as label for test mode
+            label_2d = image_2d
         else:
             label_vol = volumes['seg']
             label_2d = label_vol[..., slice_idx].unsqueeze(0)
             label_2d = torch.where(label_2d > 0, 1, 0).float()
 
-        # --- Apply transformations ---
+        # Apply transformations
         if self.transform:
             state = torch.get_rng_state()
             image_2d = self.transform(image_2d)
@@ -405,7 +397,6 @@ class BRATSDataset3D(torch.utils.data.Dataset):
                 torch.set_rng_state(state)
                 label_2d = self.transform(label_2d)
 
-        # --- Final output structure ---
         batch_image = (image_2d, image_2_5d)
         virtual_path = path.split('.nii')[0] + "_slice" + str(slice_idx) + ".nii"
 
