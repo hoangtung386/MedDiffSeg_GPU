@@ -325,15 +325,28 @@ class BRATSDataset3D(torch.utils.data.Dataset):
                 # extract all files as channels
                 for f in files:
                     try:
-                        seqtype = f.split('_')[2].split('.')[0]
-                        datapoint[seqtype] = os.path.join(root, f)
-                    except IndexError:
-                        print(f"Warning: Cannot parse filename {f}, skipping...")
+                        # Parse modality from filename: BraTS_001_flair.nii → 'flair'
+                        parts = f.split('_')
+                        if len(parts) >= 3:
+                            # Get last part before extension
+                            seqtype = parts[2].split('.')[0]
+                            datapoint[seqtype] = os.path.join(root, f)
+                            print(f"DEBUG: {f} → seqtype: {seqtype}")
+                        else:
+                            print(f"Warning: Filename {f} does not match expected format (need at least 3 parts separated by '_')")
+                    except Exception as e:
+                        print(f"Warning: Cannot parse filename {f}, error: {e}")
                         continue
                 
-                # FIXED: Check if we have all required modalities (ignore extra ones)
+                print(f"DEBUG: Folder {root} - Found modalities: {set(datapoint.keys())}, Required: {self.seqtypes_set}")
+                
+                # Check if we have all required modalities (ignore extra ones like seg in test mode)
                 if self.seqtypes_set.issubset(set(datapoint.keys())):
                     self.database.append(datapoint)
+                    print(f"DEBUG: ✓ Added patient from {root}")
+                else:
+                    missing = self.seqtypes_set - set(datapoint.keys())
+                    print(f"DEBUG: ✗ Skipped {root} - Missing modalities: {missing}")
         
         print(f"Loaded {len(self.database)} complete patient scans")
     
@@ -400,3 +413,4 @@ class BRATSDataset3D(torch.utils.data.Dataset):
             return (batch_image, batch_image, virtual_path)
         
         return (batch_image, label_2d, virtual_path)
+    
