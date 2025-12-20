@@ -44,22 +44,79 @@ def main():
     # Force batch size = 1 for low memory
     datal = th.utils.data.DataLoader(ds, batch_size=1, shuffle=False, num_workers=0)
     
+    logger.log("Detecting model version from checkpoint...")
+    
+    # Load checkpoint to detect version
+    state_dict = dist_util.load_state_dict(args.model_path, map_location="cpu")
+    
+    # Auto-detect version based on checkpoint keys
+    checkpoint_keys = list(state_dict.keys())
+    
+    # Check for version-specific keys
+    has_ss_former = any('ss_former' in k for k in checkpoint_keys)
+    has_sea = any('sea' in k for k in checkpoint_keys)
+    has_hwm = any('hwm' in k for k in checkpoint_keys)
+    
+    if has_ss_former and has_sea:
+        detected_version = 'medsegdiff-v2'
+        logger.log("Detected: MedSegDiff-V2 (with SS-Former and SEA)")
+    elif has_hwm:
+        detected_version = 'new'
+        logger.log("Detected: New version (with HWM)")
+    else:
+        detected_version = 'v1'
+        logger.log("Detected: V1 version")
+    
+    # Override version if specified by user, otherwise use detected
+    if args.version == 'auto':
+        args.version = detected_version
+        logger.log(f"Using auto-detected version: {args.version}")
+    else:
+        logger.log(f"Using user-specified version: {args.version}")
+    
     logger.log("Creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
     
-    # Load model weights
-    state_dict = dist_util.load_state_dict(args.model_path, map_location="cpu")
+    # Load model weights with partial loading support
     new_state_dict = OrderedDict()
     for k, v in state_dict.items():
         if 'module.' in k:
             new_state_dict[k[7:]] = v
         else:
-            new_state_dict = state_dict
-            break
+            new_state_dict[k] = v
     
-    model.load_state_dict(new_state_dict)
+    # Try to load with strict matching first
+    try:
+        model.load_state_dict(new_state_dict, strict=True)
+        logger.log("✓ Loaded checkpoint with strict matching")
+    except RuntimeError as e:
+        logger.log("⚠ Strict loading failed, attempting partial loading...")
+        
+        # Use partial loading
+        if hasattr(model, 'load_part_state_dict'):
+            model.load_part_state_dict(new_state_dict)
+            logger.log("✓ Loaded checkpoint with partial matching (load_part_state_dict)")
+        else:
+            # Manual partial loading
+            model_dict = model.state_dict()
+            matched_dict = {}
+            mismatched = []
+            
+            for k, v in new_state_dict.items():
+                if k in model_dict:
+                    if v.shape == model_dict[k].shape:
+                        matched_dict[k] = v
+                    else:
+                        mismatched.append(f"{k}: {v.shape} vs {model_dict[k].shape}")
+            
+            model_dict.update(matched_dict)
+            model.load_state_dict(model_dict)
+            logger.log(f"✓ Loaded {len(matched_dict)}/{len(new_state_dict)} layers")
+            
+            if mismatched:
+                logger.log(f"⚠ {len(mismatched)} layers had size mismatch (skipped)")
     model.to(dist_util.dev())
     
     if args.use_fp16:
@@ -170,7 +227,7 @@ def create_argparser():
         out_dir='./results/',
         multi_gpu=None,
         debug=False,
-        version='new'
+        version='auto'  # Auto-detect version from checkpoint
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
@@ -179,3 +236,4 @@ def create_argparser():
 
 if __name__ == "__main__":
     main()
+    
