@@ -235,7 +235,7 @@ from pathlib import Path
 
 seed=10
 th.manual_seed(seed)
-th.cuda.manual_seed_all(seed)
+# th.cuda.manual_seed_all(seed) # Comment out to prevent early CUDA init
 np.random.seed(seed)
 random.seed(seed)
 
@@ -251,7 +251,6 @@ def main():
     dist_util.setup_dist(args)
     logger.configure(dir = args.out_dir)
 
-    # ===== FIX: Match the logic from segmentation_train.py =====
     logger.log("creating data loader...")
     
     if args.data_name == 'ISIC':
@@ -289,7 +288,7 @@ def main():
     datal = th.utils.data.DataLoader(
         ds,
         batch_size=args.batch_size,
-        shuffle=False)  # Changed to False for consistent testing
+        shuffle=False)
     data = iter(datal)
 
     logger.log("creating model and diffusion...")
@@ -308,14 +307,110 @@ def main():
         else:
             new_state_dict = state_dict
             break
-
+    
     model.load_state_dict(new_state_dict)
-    model.to(dist_util.dev())
-    
+
+    # --- FIX 8: The "Done Deal" Patch (All previous fixes + Output Wrapper) ---
     if args.use_fp16:
-        model.convert_to_fp16()
+        print("Applying Fix 8: Flash Attn + SS_Former Patch + Input/Output Wrappers...")
+        import torch.nn as nn
+        import torch.nn.functional as F
+        import guided_diffusion.unet as unet_module
+        import math
+
+        # 1. Monkey Patch: Ép timestep_embedding trả về FP16
+        _orig_timestep_embedding = unet_module.timestep_embedding
+        def half_timestep_embedding(*args, **kwargs):
+            return _orig_timestep_embedding(*args, **kwargs).half()
+        unet_module.timestep_embedding = half_timestep_embedding
+
+        # 2. Monkey Patch: Flash Attention (Chống OOM)
+        def efficient_qkv_forward(self, qkv):
+            bs, width, length = qkv.shape
+            ch = width // (3 * self.n_heads)
+            q, k, v = qkv.chunk(3, dim=1)
+            q = q.reshape(bs, self.n_heads, ch, length).transpose(-1, -2)
+            k = k.reshape(bs, self.n_heads, ch, length).transpose(-1, -2)
+            v = v.reshape(bs, self.n_heads, ch, length).transpose(-1, -2)
+            out = F.scaled_dot_product_attention(q, k, v)
+            out = out.transpose(-1, -2).reshape(bs, -1, length)
+            return out
+        unet_module.QKVAttention.forward = efficient_qkv_forward
+
+        # 3. Monkey Patch: SS_Former (Xử lý FFT Float32 -> MLP Half)
+        def patched_ss_former_forward(self, x, anchor_cond, semantic_cond):
+            b, c, h, w = x.shape
+            if anchor_cond.shape[-2:] != x.shape[-2:]:
+                anchor_cond = F.interpolate(anchor_cond, size=x.shape[-2:], mode='bilinear', align_corners=False)
+            if semantic_cond.shape[-2:] != x.shape[-2:]:
+                semantic_cond = F.interpolate(semantic_cond, size=x.shape[-2:], mode='bilinear', align_corners=False)
+
+            q = self.q_conv(x)
+            k = self.k_conv(semantic_cond)
+            v = self.v_conv(anchor_cond)
+
+            q_fft = self.nbp_filter(q)
+            k_fft = self.nbp_filter(k)
+
+            scale = 1 / math.sqrt(c)
+            weight = th.einsum("bchw,bchw->bhw", q_fft * scale, k_fft * scale)
+            weight = th.softmax(weight.view(b, -1), dim=-1).view(b, h, w)
+            attn = th.einsum("bhw,bchw->bchw", weight, v.float())
+
+            attn = attn.permute(0, 2, 3, 1)
+            mlp_out = self.mlp(attn.half())  # Ép về Half cho MLP
+            mlp_out = mlp_out.permute(0, 3, 1, 2)
+
+            return self.proj_out(mlp_out) + x
+        unet_module.SS_Former.forward = patched_ss_former_forward
+
+        # 4. Define Wrappers
+        class HalfInputWrapper(nn.Module):
+            def __init__(self, module):
+                super().__init__()
+                self.module = module
+            def forward(self, x, *args, **kwargs):
+                return self.module(x.half(), *args, **kwargs)
+
+        class OutputCastingWrapper(nn.Module):
+            def __init__(self, module):
+                super().__init__()
+                self.module = module
+            def forward(self, x, *args, **kwargs):
+                return self.module(x.half(), *args, **kwargs).float()
+
+        # 5. Convert Model Weights
+        def robust_fp16_convert(m):
+            classname = m.__class__.__name__
+            if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d, 
+                              nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d)):
+                m.weight.data = m.weight.data.half()
+                if m.bias is not None: m.bias.data = m.bias.data.half()
+            elif isinstance(m, nn.Linear):
+                m.weight.data = m.weight.data.half()
+                if m.bias is not None: m.bias.data = m.bias.data.half()
+            elif isinstance(m, nn.GroupNorm):
+                if 'GroupNorm32' not in classname:
+                    m.weight.data = m.weight.data.half()
+                    if m.bias is not None: m.bias.data = m.bias.data.half()
+        model.apply(robust_fp16_convert)
+        
+        # 6. Apply Wrappers
+        if hasattr(model, 'hwm'):
+            print("  -> Wrapping hwm (Input: Float32 -> Half).")
+            model.hwm = HalfInputWrapper(model.hwm)
+            
+        if hasattr(model, 'out'):
+            print("  -> Wrapping out (Input: Float32 -> Half -> Float32).")
+            model.out = OutputCastingWrapper(model.out)
+            
+        print("  -> Fix 8 Applied Successfully.")
+            
+    # --- END FIX 8 ---
+
+    model.to(dist_util.dev())
     model.eval()
-    
+
     logger.log(f"Processing {len(datal)} batches...")
     
     for batch_idx in range(len(datal)):
@@ -333,7 +428,6 @@ def main():
         c = th.randn_like(b[:, :1, ...])
         img = th.cat((b, c), dim=1)
         
-        # Extract slice ID based on data type
         if args.data_name == 'ISIC':
             slice_ID = path[0].split("_")[-1].split('.')[0]
         elif args.data_name in ['BRATS', 'BRATS3D']:
@@ -353,54 +447,114 @@ def main():
                 model_kwargs["x_2_5d"] = b_2_5d.to(dist_util.dev())
                 
             start.record()
+
             sample_fn = (
                 diffusion.p_sample_loop_known if not args.use_ddim else diffusion.ddim_sample_loop_known
             )
-            sample, x_noisy, org, cal, cal_out = sample_fn(
-                model,
-                (args.batch_size, 3, args.image_size, args.image_size), 
-                img,
-                step=args.diffusion_steps,
-                clip_denoised=args.clip_denoised,
-                model_kwargs=model_kwargs,
-            )
+            
+            # --- FIX: Tắt gradient để tiết kiệm VRAM ---
+            with th.no_grad():
+                sample, x_noisy, org, cal, cal_out = sample_fn(
+                    model,
+                    (args.batch_size, 3, args.image_size, args.image_size), img,
+                    step = args.diffusion_steps,
+                    clip_denoised=args.clip_denoised,
+                    model_kwargs=model_kwargs,
+                )
+            # -------------------------------------------
 
             end.record()
             th.cuda.synchronize()
             print(f'Time for sample {i+1}: {start.elapsed_time(end):.2f}ms')
 
-            co = th.tensor(cal_out)
+            # Chuyển cal_out sang tensor CPU an toàn
+            if isinstance(cal_out, th.Tensor):
+                co = cal_out.detach().cpu()
+            else:
+                co = th.tensor(cal_out)
             
-            # Use version parameter to determine output
             if hasattr(args, 'version') and args.version == 'new':
-                enslist.append(sample[:,-1,:,:])
+                enslist.append(sample[:,-1,:,:].detach().cpu())
             else:
                 enslist.append(co)
 
             if args.debug:
                 if args.data_name == 'ISIC':
-                    o = th.tensor(org)[:,:-1,:,:]
-                    c = th.tensor(cal).repeat(1, 3, 1, 1)
-                    s = sample[:,-1,:,:]
-                    b,h,w = s.size()
+                    # Logic cho ISIC giữ nguyên (nhưng thêm .detach().cpu() cho an toàn)
+                    o = org[:,:-1,:,:].detach().cpu()
+                    c = cal.repeat(1, 3, 1, 1).detach().cpu()
+                    s = sample[:,-1,:,:].detach().cpu()
+                    b_sz,h,w = s.size()
                     ss = s.clone()
                     ss = ss.view(s.size(0), -1)
                     ss -= ss.min(1, keepdim=True)[0]
                     ss /= ss.max(1, keepdim=True)[0]
-                    ss = ss.view(b, h, w)
+                    ss = ss.view(b_sz, h, w)
                     ss = ss.unsqueeze(1).repeat(1, 3, 1, 1)
                     tup = (ss,o,c)
                     
                 elif args.data_name in ['BRATS', 'BRATS3D']:
-                    s = th.tensor(sample)[:,-1,:,:].unsqueeze(1)
-                    m = th.tensor(m.to(device='cpu'))[:,0,:,:].unsqueeze(1)
-                    o1 = th.tensor(org)[:,0,:,:].unsqueeze(1)
-                    o2 = th.tensor(org)[:,1,:,:].unsqueeze(1)
-                    o3 = th.tensor(org)[:,2,:,:].unsqueeze(1)
-                    o4 = th.tensor(org)[:,3,:,:].unsqueeze(1)
-                    c = th.tensor(cal)
-                    tup = (o1/o1.max(),o2/o2.max(),o3/o3.max(),o4/o4.max(),m,s,c,co)
+                    # --- FIX ERROR: 'list' object has no attribute 'to' ---
+                    # 1. Xử lý Mask 'm' (Ground Truth)
+                    # if isinstance(m, list):
+                    #     # Nếu list rỗng hoặc chứa Tensor
+                    #     if len(m) > 0 and isinstance(m[0], th.Tensor):
+                    #         m_tensor = th.stack(m)
+                    #     else:
+                    #         m_tensor = th.tensor(m)
 
+                    # --- FIX 9: Handle Mixed-Shape Mask List (BRATS3D specific) ---
+                    # BRATS3D loader trả về list [slice_mask_4D, volume_mask_5D]
+                    # Chúng ta chỉ cần cái 4D để visualize.
+                    
+                    if isinstance(m, list):
+                        # Tìm tensor nào có 4 chiều (B, C, H, W) -> Chính là slice mask
+                        valid_masks = [x for x in m if isinstance(x, th.Tensor) and x.ndim == 4]
+                        
+                        if len(valid_masks) > 0:
+                            m_tensor = valid_masks[0] # Lấy cái 4D đầu tiên
+                        elif len(m) > 0 and isinstance(m[0], th.Tensor):
+                             # Fallback: Lấy cái đầu tiên nếu không tìm thấy 4D
+                            m_tensor = m[0]
+                        else:
+                            m_tensor = th.tensor(m)
+                    elif isinstance(m, th.Tensor):
+                        m_tensor = m
+                    else:
+                        m_tensor = th.tensor(m) # Fallback cuối cùng
+
+                    # 2. Đưa tất cả về CPU và detach
+                    m_cpu = m_tensor.detach().cpu()
+                    s_cpu = sample.detach().cpu()
+                    org_cpu = org.detach().cpu()
+                    c_cpu = cal.detach().cpu()
+                    co_cpu = co 
+
+                    # 3. Format kích thước cho mask
+                    # Mask thường là [1, 4, 256, 256], ta lấy channel 0 để hiện
+                    if m_cpu.ndim == 4:
+                        m_vis = m_cpu[:, 0, :, :].unsqueeze(1)
+                    elif m_cpu.ndim == 3:
+                        m_vis = m_cpu.unsqueeze(1)
+                    else:
+                        m_vis = m_cpu 
+
+                    # 4. Format kích thước cho Sample
+                    s_vis = s_cpu[:,-1,:,:].unsqueeze(1)
+                    
+                    # 5. Format ảnh gốc (Org)
+                    o1 = org_cpu[:,0,:,:].unsqueeze(1)
+                    o2 = org_cpu[:,1,:,:].unsqueeze(1)
+                    o3 = org_cpu[:,2,:,:].unsqueeze(1)
+                    o4 = org_cpu[:,3,:,:].unsqueeze(1)
+
+                    def norm_img(x):
+                        mx = x.max()
+                        return x / mx if mx > 0 else x
+
+                    tup = (norm_img(o1), norm_img(o2), norm_img(o3), norm_img(o4), m_vis, s_vis, c_cpu, co_cpu)
+                    # -----------------------------------------------------
+                    
                 compose = th.cat(tup,0)
                 vutils.save_image(compose, fp=os.path.join(args.out_dir, f'{slice_ID}_output{i}.jpg'), nrow=1, padding=10)
                 
@@ -411,7 +565,7 @@ def main():
 
 def create_argparser():
     defaults = dict(
-        data_name='BRATS3D',  # Changed default to match training
+        data_name='BRATS3D',
         data_dir="../dataset/brats2020/testing",
         clip_denoised=True,
         num_samples=1,
@@ -423,7 +577,7 @@ def create_argparser():
         out_dir='./results/',
         multi_gpu=None,
         debug=False,
-        version='new'  # Added version parameter
+        version='new'
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

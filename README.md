@@ -46,11 +46,11 @@ The table below illustrates the (planned) differences between the original versi
 
 - For testing, run:
 ```
-python scripts/segmentation_sample.py \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=1 python scripts/segmentation_sample.py \
   --data_name BRATS3D \
-  --data_dir /home/admin1/Projects/MedDiffSeg_GPU/data/training_test \
-  --out_dir /home/admin1/Projects/MedDiffSeg_GPU/output \
-  --model_path /home/admin1/Projects/MedDiffSeg_GPU/models/emasavedmodel_0.9999_100000.pt \
+  --data_dir /mnt/sda1/MedDiffSeg_GPU/training_test \
+  --out_dir /mnt/sda1/MedDiffSeg_GPU/output \
+  --model_path /mnt/sda1/MedDiffSeg_GPU/emasavedmodel_0.9999_100000.pt \
   --image_size 256 \
   --num_channels 128 \
   --class_cond False \
@@ -68,7 +68,8 @@ python scripts/segmentation_sample.py \
   --gpu_dev 0 \
   --debug True \
   --version medsegdiff-v2 \
-  --in_ch 5
+  --in_ch 5 \
+  --use_fp16 True
 ```
 
 ---

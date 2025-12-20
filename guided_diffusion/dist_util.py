@@ -17,11 +17,15 @@ GPUS_PER_NODE = 8
 
 SETUP_RETRY_COUNT = 3
 
+# Global variable to store the requested GPU ID
+_GPU_INDEX = None 
 
 def setup_dist(args):
     """
     Setup a distributed process group.
     """
+    global _GPU_INDEX  # Use the global variable
+    
     if dist.is_initialized():
         return
 
@@ -29,6 +33,11 @@ def setup_dist(args):
 
     if not args.multi_gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_dev
+        # Capture the requested GPU index explicitly
+        try:
+            _GPU_INDEX = int(args.gpu_dev)
+        except ValueError:
+            _GPU_INDEX = 0
 
     backend = "gloo" if not th.cuda.is_available() else "nccl"
 
@@ -53,7 +62,21 @@ def dev():
     """
     Get the device to use for torch.distributed.
     """
+    global _GPU_INDEX # Access the global variable
+
     if th.cuda.is_available():
+        # Priority: If a specific GPU was requested via args.gpu_dev
+        if _GPU_INDEX is not None:
+            # Case 1: If CUDA_VISIBLE_DEVICES failed (context loaded early), 
+            # all GPUs are visible, so we select the specific index (e.g., cuda:1).
+            if _GPU_INDEX < th.cuda.device_count():
+                return th.device(f"cuda:{_GPU_INDEX}")
+            
+            # Case 2: If CUDA_VISIBLE_DEVICES worked (only 1 GPU visible),
+            # that GPU is mapped to index 0.
+            return th.device("cuda:0")
+
+        # Default distributed behavior
         return th.device(f"cuda:{MPI.COMM_WORLD.Get_rank() % GPUS_PER_NODE}")
     return th.device("cpu")
 
@@ -89,3 +112,4 @@ def _find_free_port():
         return s.getsockname()[1]
     finally:
         s.close()
+        
