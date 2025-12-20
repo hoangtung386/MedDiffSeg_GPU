@@ -120,8 +120,13 @@ def main():
     model.to(dist_util.dev())
     
     if args.use_fp16:
-        logger.log("Using FP16 precision...")
-        model.convert_to_fp16()
+        if hasattr(model, 'convert_to_fp16'):
+            logger.log("Using FP16 precision...")
+            model.convert_to_fp16()
+        else:
+            logger.log("Warning: Model doesn't support convert_to_fp16(), using FP32")
+            logger.log("(MedSegDiffV2 uses self.dtype for FP16, no explicit conversion needed)")
+            args.use_fp16 = False  # Disable FP16 flag
     
     model.eval()
     
